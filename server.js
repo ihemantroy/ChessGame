@@ -6,13 +6,16 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' },
-  maxHttpBufferSize: 5e6 // 5MB for photo uploads
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  maxHttpBufferSize: 5e6,
+  transports: ['polling', 'websocket'],
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// rooms[roomId] = { players: [{id, name, photo, color}], board, turn, moveCount, ... }
 const rooms = {};
 
 function generateRoomId() {
@@ -118,7 +121,6 @@ function isStalemate(board, color) {
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id);
 
-  // Create room
   socket.on('create_room', ({ name, photo }) => {
     const roomId = generateRoomId();
     rooms[roomId] = {
@@ -136,7 +138,6 @@ io.on('connection', (socket) => {
     console.log(`Room ${roomId} created by ${name}`);
   });
 
-  // Join room
   socket.on('join_room', ({ roomId, name, photo }) => {
     const room = rooms[roomId];
     if (!room) { socket.emit('error', 'Room not found'); return; }
@@ -151,7 +152,6 @@ io.on('connection', (socket) => {
     const p1 = room.players[0];
     const p2 = room.players[1];
 
-    // Send game start to both
     io.to(p1.id).emit('game_start', {
       color: 'white', opponentName: p2.name, opponentPhoto: p2.photo,
       board: room.board, turn: room.turn
@@ -163,7 +163,6 @@ io.on('connection', (socket) => {
     console.log(`Game started in room ${roomId}`);
   });
 
-  // Get valid moves for a piece
   socket.on('get_moves', ({ r, c }) => {
     const room = rooms[socket.roomId];
     if (!room) return;
@@ -173,7 +172,6 @@ io.on('connection', (socket) => {
     socket.emit('valid_moves', { r, c, moves });
   });
 
-  // Make a move
   socket.on('make_move', ({ fr, fc, tr, tc, promotion }) => {
     const room = rooms[socket.roomId];
     if (!room || room.status !== 'playing') return;
@@ -194,13 +192,11 @@ io.on('connection', (socket) => {
     room.board[tr][tc].moved = true;
     room.lastMove = { fr, fc, tr, tc };
 
-    // Castling rook
     if (piece.t === 'K' && Math.abs(fc - tc) === 2) {
       if (tc === 6) { room.board[fr][5] = { ...room.board[fr][7], moved: true }; room.board[fr][7] = null; }
       else { room.board[fr][3] = { ...room.board[fr][0], moved: true }; room.board[fr][0] = null; }
     }
 
-    // Pawn promotion
     if (piece.t === 'P' && (tr === 0 || tr === 7)) {
       room.board[tr][tc].t = promotion || 'Q';
     }
@@ -236,7 +232,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Chat message
   socket.on('chat_msg', ({ msg }) => {
     const room = rooms[socket.roomId];
     if (!room) return;
@@ -245,7 +240,6 @@ io.on('connection', (socket) => {
     io.to(socket.roomId).emit('chat_msg', { name: player.name, msg, color: player.color });
   });
 
-  // Resign
   socket.on('resign', () => {
     const room = rooms[socket.roomId];
     if (!room || room.status !== 'playing') return;
@@ -260,15 +254,12 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Disconnect
   socket.on('disconnect', () => {
     const room = rooms[socket.roomId];
     if (!room) return;
     if (room.status === 'playing') {
       const other = room.players.find(p => p.id !== socket.id);
-      if (other) {
-        io.to(other.id).emit('opponent_disconnected');
-      }
+      if (other) io.to(other.id).emit('opponent_disconnected');
     }
     delete rooms[socket.roomId];
     console.log('Disconnected:', socket.id);
